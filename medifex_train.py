@@ -30,7 +30,7 @@ FEATURES = [
 TARGET = "Etat_Sante"
 
 # =========================
-# === FONCTIONS UTILITAIRES ===
+# === FONCTIONS UTILITAIHRES ===
 # =========================
 
 @st.cache_data
@@ -66,16 +66,23 @@ def load_data(source):
                 df[col] = pd.to_numeric(df[col], errors='coerce')
     return df
 
-def train_and_evaluate_model(df, features, target, status_placeholder): # Renommé pour être plus clair
+def train_and_evaluate_model(df, features, target, status_placeholder, progress_bar): # Ajout de progress_bar
     """
     Entraîne un modèle GradientBoostingClassifier avec GridSearchCV
     et évalue ses performances. Sauvegarde le modèle, scaler et encoder.
     """
+    TOTAL_STEPS = 5 # Nombre total d'étapes pour la barre de progression
+
     if df.empty or len(df) < 2:
         status_placeholder.error("Données insuffisantes pour l'entraînement du modèle.")
+        progress_bar.progress(0)
         return None, None, None, None
 
-    status_placeholder.info("Étape 1/5: Nettoyage et vérification des données...")
+    # Étape 1: Nettoyage et vérification des données
+    current_step = 1
+    status_placeholder.info(f"Étape {current_step}/{TOTAL_STEPS}: Nettoyage et vérification des données...")
+    progress_bar.progress(current_step / TOTAL_STEPS)
+
     initial_rows = len(df)
     cols_to_check = [col for col in features + [target] if col in df.columns]
     df.dropna(subset=cols_to_check, inplace=True)
@@ -86,6 +93,7 @@ def train_and_evaluate_model(df, features, target, status_placeholder): # Renomm
     
     if rows_after_dropna < 2:
         status_placeholder.error("Données insuffisantes pour l'entraînement après la suppression des valeurs manquantes.")
+        progress_bar.progress(0)
         return None, None, None, None
 
     X = df[features]
@@ -93,9 +101,14 @@ def train_and_evaluate_model(df, features, target, status_placeholder): # Renomm
 
     if len(y.unique()) < 2:
         status_placeholder.error(f"La variable cible '{target}' contient moins de 2 classes uniques ({y.unique()}) après le nettoyage. Impossible de réaliser une classification.")
+        progress_bar.progress(0)
         return None, None, None, None
 
-    status_placeholder.info("Étape 2/5: Encodage des variables...")
+    # Étape 2: Encodage des variables
+    current_step = 2
+    status_placeholder.info(f"Étape {current_step}/{TOTAL_STEPS}: Encodage des variables...")
+    progress_bar.progress(current_step / TOTAL_STEPS)
+
     label_encoder = LabelEncoder()
     y_encoded = label_encoder.fit_transform(y)
     st.write(f"Classes encodées pour '{target}' : {label_encoder.classes_}")
@@ -108,7 +121,11 @@ def train_and_evaluate_model(df, features, target, status_placeholder): # Renomm
             except Exception as e:
                 status_placeholder.warning(f"Impossible d'encoder la colonne catégorielle '{col}' : {e}. Assurez-vous que ses valeurs sont cohérentes.")
     
-    status_placeholder.info("Étape 3/5: Séparation et mise à l'échelle des données...")
+    # Étape 3: Séparation et mise à l'échelle des données
+    current_step = 3
+    status_placeholder.info(f"Étape {current_step}/{TOTAL_STEPS}: Séparation et mise à l'échelle des données...")
+    progress_bar.progress(current_step / TOTAL_STEPS)
+
     X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
 
     scaler = StandardScaler()
@@ -121,12 +138,18 @@ def train_and_evaluate_model(df, features, target, status_placeholder): # Renomm
     if X_train_scaled_df.isnull().sum().sum() > 0:
         status_placeholder.error(f"Des valeurs NaN subsistent dans les données d'entraînement après mise à l'échelle. Impossible de continuer.")
         st.dataframe(X_train_scaled_df.isnull().sum())
+        progress_bar.progress(0)
         return None, None, None, None
     if not np.isfinite(X_train_scaled_df).all().all():
         status_placeholder.error(f"Des valeurs infinies subsistent dans les données d'entraînement après mise à l'échelle. Impossible de continuer.")
+        progress_bar.progress(0)
         return None, None, None, None
 
-    status_placeholder.info("Étape 4/5: Entraînement du modèle avec GridSearchCV (cela peut prendre du temps)...")
+    # Étape 4: Entraînement du modèle avec GridSearchCV
+    current_step = 4
+    status_placeholder.info(f"Étape {current_step}/{TOTAL_STEPS}: Entraînement du modèle avec GridSearchCV (cela peut prendre du temps)...")
+    progress_bar.progress(current_step / TOTAL_STEPS)
+
     model = GradientBoostingClassifier(random_state=42)
     param_grid = {
         'n_estimators': [100, 200, 300],
@@ -134,7 +157,6 @@ def train_and_evaluate_model(df, features, target, status_placeholder): # Renomm
         'max_depth': [3, 4, 5]
     }
 
-    # Utilisation de st.spinner pour une indication visuelle d'une longue opération
     with st.spinner("Entraînement en cours, veuillez patienter..."):
         grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=5, n_jobs=-1, verbose=1)
         grid_search.fit(X_train_scaled_df, y_train)
@@ -142,7 +164,11 @@ def train_and_evaluate_model(df, features, target, status_placeholder): # Renomm
     best_model = grid_search.best_estimator_
     st.write(f"Meilleurs hyperparamètres trouvés : {grid_search.best_params_}")
 
-    status_placeholder.info("Étape 5/5: Évaluation du modèle et sauvegarde...")
+    # Étape 5: Évaluation du modèle et sauvegarde
+    current_step = 5
+    status_placeholder.info(f"Étape {current_step}/{TOTAL_STEPS}: Évaluation du modèle et sauvegarde...")
+    progress_bar.progress(current_step / TOTAL_STEPS)
+
     y_pred = best_model.predict(X_test_scaled_df)
     accuracy = accuracy_score(y_test, y_pred)
     report = classification_report(y_test, y_pred, target_names=label_encoder.classes_, output_dict=True)
@@ -153,6 +179,7 @@ def train_and_evaluate_model(df, features, target, status_placeholder): # Renomm
     joblib.dump(label_encoder, ENCODER_PATH)
 
     status_placeholder.success("Modèle, scaler et encodeur sauvegardés localement. Entraînement terminé!")
+    progress_bar.progress(1.0) # Termine la barre de progression à 100%
     
     return accuracy, report, best_model, label_encoder.classes_
 
@@ -193,16 +220,17 @@ else:
 st.header("2. Entraîner le Modèle IA")
 st.info("L'entraînement inclut la recherche des meilleurs hyperparamètres (GridSearchCV). Cela peut prendre du temps en fonction de la taille de vos données et de la puissance de calcul.")
 
-# Placeholder pour les messages d'état en direct
+# Placeholder pour les messages d'état en direct et la barre de progression
 training_status_placeholder = st.empty()
+training_progress_bar = st.progress(0) # Initialise la barre de progression à 0%
 
 if not df.empty and st.button("Lancer l'entraînement et l'évaluation"):
     st.write("---")
     st.subheader("Processus d'Entraînement")
     
-    # Passe le placeholder à la fonction d'entraînement
+    # Passe les placeholders à la fonction d'entraînement
     accuracy, report_dict, best_model, target_classes = train_and_evaluate_model(
-        df, FEATURES, TARGET, training_status_placeholder
+        df, FEATURES, TARGET, training_status_placeholder, training_progress_bar
     )
 
     if best_model is not None:
@@ -223,17 +251,36 @@ if not df.empty and st.button("Lancer l'entraînement et l'évaluation"):
         st.json(report_dict)
         
         st.write("Matrice de Confusion (sur l'ensemble de test) :")
+        # Il est important de recréer les jeux de données X_test, y_test pour la matrice de confusion ici
+        # en respectant le même prétraitement que dans train_and_evaluate_model
+        # NOTE: Pour que la matrice de confusion soit cohérente, il faudrait réappliquer la suppression des NaN
+        # et l'encodage/scaling si des données sont passées ici qui n'auraient pas été traitées par la fonction.
+        # Pour simplifier, on assume que df est déjà nettoyé ici.
         X_temp = df[FEATURES]
-        y_temp_encoded = LabelEncoder().fit_transform(df[TARGET])
+        y_temp = df[TARGET] # Utilisez y_temp non encodé pour l'encoder localement
+        
+        # Encodage de la cible pour la matrice de confusion
+        le_cm = LabelEncoder()
+        y_temp_encoded = le_cm.fit_transform(y_temp)
+        
+        # Encodage des features catégorielles si nécessaire pour X_temp avant scaling
+        for col in X_temp.columns:
+            if X_temp[col].dtype == 'object' or X_temp[col].dtype == 'category':
+                temp_encoder_cm = LabelEncoder()
+                X_temp[col] = temp_encoder_cm.fit_transform(X_temp[col])
+
+        # Séparation et scaling pour la matrice de confusion
         X_train_temp, X_test_temp, y_train_temp, y_test_temp = train_test_split(X_temp, y_temp_encoded, test_size=0.2, random_state=42)
         
         scaler_temp = StandardScaler()
-        X_test_scaled_temp = scaler_temp.fit(X_train_temp).transform(X_test_temp) 
+        X_train_scaled_temp = scaler_temp.fit_transform(X_train_temp) # Important: fit sur le train
+        X_test_scaled_temp = scaler_temp.transform(X_test_temp) 
         
+        # Prédiction avec le modèle entraîné
         y_pred_cm = best_model.predict(X_test_scaled_temp)
+        
         cm = confusion_matrix(y_test_temp, y_pred_cm, labels=[i for i in range(len(target_classes))])
         
-        st.write("Matrice de Confusion (sur l'ensemble de test) :")
         cm_df = pd.DataFrame(cm, index=[f"Vrai: {c}" for c in target_classes], columns=[f"Prédit: {c}" for c in target_classes])
         st.dataframe(cm_df)
 
