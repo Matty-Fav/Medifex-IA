@@ -34,24 +34,39 @@ TARGET = "Etat_Sante"
 # === FONCTIONS UTILITAIRES ===
 # =========================
 
-@st.cache_data # Cache la fonction pour ne la recharger qu'une fois ou si le chemin change
-def load_data(file_path):
-    """Charge les données depuis un fichier CSV."""
-    if not os.path.exists(file_path):
-        st.error(f"Fichier de données introuvable : {file_path}")
-        return pd.DataFrame() # Retourne un DataFrame vide en cas d'erreur
-    try:
-        df = pd.read_csv(file_path)
-        # Assurez-vous des types de données cohérents
+@st.cache_data # Cache la fonction pour ne la recharger qu'une fois ou si le contenu change
+def load_data(source):
+    """
+    Charge les données depuis un fichier CSV.
+    Peut prendre un chemin de fichier (str) ou un objet UploadedFile de Streamlit.
+    """
+    df = pd.DataFrame() # Initialise df à un DataFrame vide par défaut
+
+    if isinstance(source, str): # Si la source est un chemin de fichier (pour le chargement par défaut)
+        if not os.path.exists(source):
+            st.error(f"Fichier de données introuvable : {source}")
+            return pd.DataFrame()
+        try:
+            df = pd.read_csv(source)
+        except Exception as e:
+            st.error(f"Erreur lors du chargement du fichier '{source}' : {e}")
+            return pd.DataFrame()
+    elif hasattr(source, 'read'): # Si la source est un objet fichier (comme UploadedFile)
+        try:
+            df = pd.read_csv(source)
+        except Exception as e:
+            st.error(f"Erreur lors du chargement du fichier téléversé : {e}")
+            return pd.DataFrame()
+    else:
+        st.error("Source de données non reconnue. Veuillez fournir un chemin valide ou un fichier à téléverser.")
+        return pd.DataFrame()
+
+    # Le traitement des colonnes est appliqué après le chargement, quel que soit le type de source
+    if not df.empty:
         for col in ['Age', 'Tension_arterielle', 'Frequence_cardiaque', 'Cholesterol', 'Glycemie', 'BMI', 'SCFA', 'TMAO', 'Indole', 'CRP']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-        # Gérer les colonnes catégorielles si nécessaire avant l'encodage
-        # par exemple, s'assurer que 'Sexe' et d'autres sont bien des objets pour LabelEncoder
-        return df
-    except Exception as e:
-        st.error(f"Erreur lors du chargement ou du traitement du fichier de données : {e}")
-        return pd.DataFrame()
+    return df
 
 def train_and_evaluate_model(df, features, target, progress_callback=None):
     """
@@ -138,6 +153,7 @@ uploaded_file = st.file_uploader("Chargez un fichier CSV pour l'entraînement", 
 
 df = pd.DataFrame()
 if uploaded_file is not None:
+    # Appelle la fonction load_data avec l'objet UploadedFile
     df = load_data(uploaded_file)
     if not df.empty:
         st.success(f"Fichier '{uploaded_file.name}' chargé avec succès. {len(df)} lignes trouvées.")
@@ -148,6 +164,7 @@ if uploaded_file is not None:
 else:
     # Charger le fichier par défaut si aucun n'est uploadé et qu'il existe
     if os.path.exists(DATA_PATH):
+        # Appelle la fonction load_data avec le chemin du fichier par défaut
         df = load_data(DATA_PATH)
         if not df.empty:
             st.info(f"Fichier de données par défaut '{DATA_PATH}' chargé. {len(df)} lignes.")
@@ -188,13 +205,19 @@ if not df.empty and st.button("Lancer l'entraînement et l'évaluation"):
         st.json(report_dict) # Affiche le rapport sous forme de JSON pour une meilleure lisibilité
         
         # Affichage de la matrice de confusion
-        y_true_encoded = LabelEncoder().fit(df[TARGET]).transform(df[TARGET]) # Re-encoder pour obtenir y_true_encoded
-        X_scaled_df = StandardScaler().fit_transform(df[FEATURES])
+        # Pour une matrice de confusion pertinente, il faut utiliser les données de test, ou bien re-prédire sur l'ensemble complet si le modèle est finalisé
+        # Je vais utiliser l'ensemble test pour la matrice de confusion pour rester cohérent avec l'évaluation
+        X_temp = df[FEATURES]
+        y_temp_encoded = LabelEncoder().fit_transform(df[TARGET])
+        X_train_temp, X_test_temp, y_train_temp, y_test_temp = train_test_split(X_temp, y_temp_encoded, test_size=0.2, random_state=42)
         
-        y_pred_encoded = best_model.predict(X_scaled_df)
-        cm = confusion_matrix(y_true_encoded, y_pred_encoded, labels=[i for i in range(len(target_classes))])
+        scaler_temp = StandardScaler()
+        X_test_scaled_temp = scaler_temp.fit(X_train_temp).transform(X_test_temp) # Scale avec le scaler fit sur le train
         
-        st.write("Matrice de Confusion (sur l'ensemble complet si le modèle est entraîné sur tout) :")
+        y_pred_cm = best_model.predict(X_test_scaled_temp)
+        cm = confusion_matrix(y_test_temp, y_pred_cm, labels=[i for i in range(len(target_classes))])
+        
+        st.write("Matrice de Confusion (sur l'ensemble de test) :")
         cm_df = pd.DataFrame(cm, index=[f"Vrai: {c}" for c in target_classes], columns=[f"Prédit: {c}" for c in target_classes])
         st.dataframe(cm_df)
 
@@ -213,7 +236,7 @@ if os.path.exists(MODEL_PATH) and os.path.exists(SCALER_PATH) and os.path.exists
 
     with open(zip_file_name, "rb") as f:
         st.download_button(
-            label="📥 Télécharger les modèles (modèle, scaler, encoder)",
+            label="📥 Télécharger les modèles (modèle, scaler, encodeur)",
             data=f.read(),
             file_name=zip_file_name,
             mime="application/zip"
