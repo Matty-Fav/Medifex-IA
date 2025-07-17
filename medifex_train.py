@@ -5,7 +5,8 @@ import joblib
 from datetime import datetime
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.model_selection import train_test_split, GridSearchCV
+# Importer RandomizedSearchCV en plus de GridSearchCV (que nous ne l'utiliserons plus)
+from sklearn.model_selection import train_test_split, GridSearchCV, RandomizedSearchCV 
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import matplotlib.pyplot as plt
 import os
@@ -66,9 +67,9 @@ def load_data(source):
                 df[col] = pd.to_numeric(df[col], errors='coerce')
     return df
 
-def train_and_evaluate_model(df, features, target, status_placeholder, progress_bar): # Ajout de progress_bar
+def train_and_evaluate_model(df, features, target, status_placeholder, progress_bar):
     """
-    Entraîne un modèle GradientBoostingClassifier avec GridSearchCV
+    Entraîne un modèle GradientBoostingClassifier avec RandomizedSearchCV
     et évalue ses performances. Sauvegarde le modèle, scaler et encoder.
     """
     TOTAL_STEPS = 5 # Nombre total d'étapes pour la barre de progression
@@ -145,24 +146,35 @@ def train_and_evaluate_model(df, features, target, status_placeholder, progress_
         progress_bar.progress(0)
         return None, None, None, None
 
-    # Étape 4: Entraînement du modèle avec GridSearchCV
+    # Étape 4: Entraînement du modèle avec RandomizedSearchCV (MODIFIÉ ICI)
     current_step = 4
-    status_placeholder.info(f"Étape {current_step}/{TOTAL_STEPS}: Entraînement du modèle avec GridSearchCV (cela peut prendre du temps)...")
+    status_placeholder.info(f"Étape {current_step}/{TOTAL_STEPS}: Recherche des meilleurs hyperparamètres avec Recherche Aléatoire (cela prendra moins de temps)...")
     progress_bar.progress(current_step / TOTAL_STEPS)
 
     model = GradientBoostingClassifier(random_state=42)
-    param_grid = {
+    # La grille de paramètres reste la même, RandomizedSearchCV va échantillonner dedans
+    param_distributions = { 
         'n_estimators': [100, 200, 300],
         'learning_rate': [0.01, 0.1, 0.2],
         'max_depth': [3, 4, 5]
     }
 
     with st.spinner("Entraînement en cours, veuillez patienter..."):
-        grid_search = GridSearchCV(estimator=model, param_grid=param_grid, cv=5, n_jobs=-1, verbose=1)
-        grid_search.fit(X_train_scaled_df, y_train)
+        # Utilisation de RandomizedSearchCV avec n_iter pour limiter le nombre d'essais
+        # n_jobs=1 pour limiter l'utilisation du CPU
+        random_search = RandomizedSearchCV(
+            estimator=model,
+            param_distributions=param_distributions,
+            n_iter=10, # Nombre d'itérations aléatoires à essayer (vous pouvez ajuster)
+            cv=5,       # Validation croisée à 5 plis
+            n_jobs=1,   # Utilise un seul cœur CPU pour réduire la consommation de ressources
+            verbose=1,
+            random_state=42
+        )
+        random_search.fit(X_train_scaled_df, y_train)
 
-    best_model = grid_search.best_estimator_
-    st.write(f"Meilleurs hyperparamètres trouvés : {grid_search.best_params_}")
+    best_model = random_search.best_estimator_
+    st.write(f"Meilleurs hyperparamètres trouvés : {random_search.best_params_}")
 
     # Étape 5: Évaluation du modèle et sauvegarde
     current_step = 5
@@ -218,7 +230,7 @@ else:
         st.warning("Veuillez charger un fichier CSV pour commencer l'entraînement.")
 
 st.header("2. Entraîner le Modèle IA")
-st.info("L'entraînement inclut la recherche des meilleurs hyperparamètres (GridSearchCV). Cela peut prendre du temps en fonction de la taille de vos données et de la puissance de calcul.")
+st.info("L'entraînement inclut la recherche des meilleurs hyperparamètres (RandomizedSearchCV). Cela sera moins intensif en ressources que GridSearchCV, mais le temps total dépendra de la taille de vos données.")
 
 # Placeholder pour les messages d'état en direct et la barre de progression
 training_status_placeholder = st.empty()
@@ -242,41 +254,32 @@ if not df.empty and st.button("Lancer l'entraînement et l'évaluation"):
         else:
             st.warning(f"Le modèle a atteint une précision de {accuracy:.2%}. L'objectif de 95% n'est pas atteint.")
             st.info("Pour améliorer la précision :")
-            st.write("- **Ajoutez plus de données** d'entraînement.")
-            st.write("- **Améliorez la qualité de vos données** (gestion des valeurs manquantes, outliers).")
+            st.write("- **Augmentez `n_iter`** dans RandomizedSearchCV si le temps le permet.")
+            st.write("- **Ajoutez plus de données** d'entraînement ou **améliorez leur qualité**.")
             st.write("- **Faites de l'ingénierie de fonctionnalités** (créez de nouvelles features à partir des existantes).")
-            st.write("- **Essayez d'autres modèles** ou ajustez davantage la grille de paramètres.")
+            st.write("- **Essayez d'autres modèles** si GradientBoostingClassifier n'est pas suffisant.")
 
         st.subheader("Rapport de Classification Détaillé")
         st.json(report_dict)
         
         st.write("Matrice de Confusion (sur l'ensemble de test) :")
-        # Il est important de recréer les jeux de données X_test, y_test pour la matrice de confusion ici
-        # en respectant le même prétraitement que dans train_and_evaluate_model
-        # NOTE: Pour que la matrice de confusion soit cohérente, il faudrait réappliquer la suppression des NaN
-        # et l'encodage/scaling si des données sont passées ici qui n'auraient pas été traitées par la fonction.
-        # Pour simplifier, on assume que df est déjà nettoyé ici.
         X_temp = df[FEATURES]
-        y_temp = df[TARGET] # Utilisez y_temp non encodé pour l'encoder localement
+        y_temp = df[TARGET]
         
-        # Encodage de la cible pour la matrice de confusion
         le_cm = LabelEncoder()
         y_temp_encoded = le_cm.fit_transform(y_temp)
         
-        # Encodage des features catégorielles si nécessaire pour X_temp avant scaling
         for col in X_temp.columns:
             if X_temp[col].dtype == 'object' or X_temp[col].dtype == 'category':
                 temp_encoder_cm = LabelEncoder()
                 X_temp[col] = temp_encoder_cm.fit_transform(X_temp[col])
 
-        # Séparation et scaling pour la matrice de confusion
         X_train_temp, X_test_temp, y_train_temp, y_test_temp = train_test_split(X_temp, y_temp_encoded, test_size=0.2, random_state=42)
         
         scaler_temp = StandardScaler()
-        X_train_scaled_temp = scaler_temp.fit_transform(X_train_temp) # Important: fit sur le train
+        X_train_scaled_temp = scaler_temp.fit_transform(X_train_temp)
         X_test_scaled_temp = scaler_temp.transform(X_test_temp) 
         
-        # Prédiction avec le modèle entraîné
         y_pred_cm = best_model.predict(X_test_scaled_temp)
         
         cm = confusion_matrix(y_test_temp, y_pred_cm, labels=[i for i in range(len(target_classes))])
