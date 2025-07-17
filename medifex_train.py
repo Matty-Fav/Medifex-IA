@@ -21,7 +21,6 @@ MODEL_DIR = "models" # Dossier pour sauvegarder les modèles
 MODEL_PATH = os.path.join(MODEL_DIR, "medifex_model.pkl")
 SCALER_PATH = os.path.join(MODEL_DIR, "scaler.pkl")
 ENCODER_PATH = os.path.join(MODEL_DIR, "encoder.pkl")
-# Ancien DEFAULT_CSV = "100kpatients.csv" - Si vous avez plusieurs datasets, gérez-les via uploader ou config
 
 FEATURES = [
     'Age', 'Sexe', 'Tension_arterielle', 'Frequence_cardiaque', 'Cholesterol', 'Glycemie', 'BMI', 'SCFA', 'TMAO',
@@ -77,21 +76,51 @@ def train_and_evaluate_model(df, features, target, progress_callback=None):
         st.error("Données insuffisantes pour l'entraînement du modèle.")
         return None, None, None, None
 
+    # --- NOUVELLE ÉTAPE IMPORTANTE : GESTION DES VALEURS MANQUANTES (NaN) ---
+    # Supprime les lignes où il y a des NaN dans les colonnes de features ou la colonne cible
+    initial_rows = len(df)
+    # Créer la liste des colonnes à vérifier pour les NaN
+    cols_to_check = [col for col in features + [target] if col in df.columns]
+    df.dropna(subset=cols_to_check, inplace=True)
+    rows_after_dropna = len(df)
+
+    if initial_rows > rows_after_dropna:
+        st.warning(f"Attention : {initial_rows - rows_after_dropna} lignes ont été supprimées car elles contenaient des valeurs manquantes dans les features ou la cible.")
+    
+    if rows_after_dropna < 2:
+        st.error("Données insuffisantes pour l'entraînement après la suppression des valeurs manquantes.")
+        return None, None, None, None
+
     # Séparation des caractéristiques (X) et de la cible (y)
     X = df[features]
     y = df[target]
 
+    # --- NOUVELLE ÉTAPE IMPORTANTE : Vérification de la variable cible ---
+    if len(y.unique()) < 2:
+        st.error(f"La variable cible '{target}' contient moins de 2 classes uniques ({y.unique()}) après le nettoyage. Impossible de réaliser une classification.")
+        return None, None, None, None
+
     # Encodage de la variable cible
     label_encoder = LabelEncoder()
     y_encoded = label_encoder.fit_transform(y)
-    st.write(f"Classes encodées : {label_encoder.classes_}")
+    st.write(f"Classes encodées pour '{target}' : {label_encoder.classes_}")
 
     # Encodage des caractéristiques catégorielles (si elles existent et ne sont pas déjà numériques)
-    # Pour l'instant, toutes les FEATURES sont numériques ou seront traitées par LabelEncoder si elles sont détectées comme objets
-    # Si 'Sexe' est 'Homme'/'Femme', LabelEncoder le gérera. Si d'autres catégorielles, il faudra un OneHotEncoder.
+    # Cette partie est plus robuste pour éviter des erreurs si les colonnes ne sont pas 'object'
     for col in X.columns:
         if X[col].dtype == 'object' or X[col].dtype == 'category':
-            X[col] = label_encoder.fit_transform(X[col]) # Utiliser un LabelEncoder séparé si plusieurs cols catégorielles
+            # Utilise un LabelEncoder séparé pour chaque colonne catégorielle si besoin
+            # Ou mieux, utiliser OneHotEncoder si ce sont des catégories non-ordinales
+            # Pour l'instant, on se base sur LabelEncoder.
+            try:
+                # Créer un nouvel encodeur pour cette colonne afin de ne pas mélanger les mappings
+                temp_encoder = LabelEncoder() 
+                X[col] = temp_encoder.fit_transform(X[col])
+                # st.write(f"Colonne catégorielle '{col}' encodée.")
+            except Exception as e:
+                st.warning(f"Impossible d'encoder la colonne catégorielle '{col}' : {e}. Assurez-vous que ses valeurs sont cohérentes.")
+                # Si l'encodage échoue, cela pourrait laisser des NaNs ou des types incorrects.
+                # Une gestion plus sophistiquée des erreurs ici serait d'imputer ou d'exclure la colonne.
 
     # Séparation des données en ensembles d'entraînement et de test
     X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
@@ -104,6 +133,15 @@ def train_and_evaluate_model(df, features, target, progress_callback=None):
     # Conversion en DataFrame pour conserver les noms de colonnes (utile pour la prédiction)
     X_train_scaled_df = pd.DataFrame(X_train_scaled, columns=features)
     X_test_scaled_df = pd.DataFrame(X_test_scaled, columns=features)
+    
+    # --- Vérification finale des NaN après toutes les transformations ---
+    if X_train_scaled_df.isnull().sum().sum() > 0:
+        st.error(f"Des valeurs NaN subsistent dans les données d'entraînement après mise à l'échelle. Impossible de continuer.")
+        st.dataframe(X_train_scaled_df.isnull().sum())
+        return None, None, None, None
+    if not np.isfinite(X_train_scaled_df).all().all():
+        st.error(f"Des valeurs infinies subsistent dans les données d'entraînement après mise à l'échelle. Impossible de continuer.")
+        return None, None, None, None
 
     # Définition du modèle et de la grille de paramètres pour GridSearchCV
     model = GradientBoostingClassifier(random_state=42)
@@ -175,9 +213,6 @@ else:
 st.header("2. Entraîner le Modèle IA")
 st.info("L'entraînement inclut la recherche des meilleurs hyperparamètres (GridSearchCV). Cela peut prendre du temps en fonction de la taille de vos données et de la puissance de calcul.")
 
-# Placeholder pour la courbe d'apprentissage si on voulait la mettre à jour en direct (moins pertinent avec GridSearchCV)
-# curve_placeholder = st.empty()
-
 if not df.empty and st.button("Lancer l'entraînement et l'évaluation"):
     st.write("---")
     st.subheader("Processus d'Entraînement")
@@ -205,14 +240,15 @@ if not df.empty and st.button("Lancer l'entraînement et l'évaluation"):
         st.json(report_dict) # Affiche le rapport sous forme de JSON pour une meilleure lisibilité
         
         # Affichage de la matrice de confusion
-        # Pour une matrice de confusion pertinente, il faut utiliser les données de test, ou bien re-prédire sur l'ensemble complet si le modèle est finalisé
-        # Je vais utiliser l'ensemble test pour la matrice de confusion pour rester cohérent avec l'évaluation
+        # Pour une matrice de confusion pertinente, il faut utiliser les données de test
+        # Reprendre X_test_scaled_df et y_test_encoded du dernier entraînement
         X_temp = df[FEATURES]
         y_temp_encoded = LabelEncoder().fit_transform(df[TARGET])
         X_train_temp, X_test_temp, y_train_temp, y_test_temp = train_test_split(X_temp, y_temp_encoded, test_size=0.2, random_state=42)
         
         scaler_temp = StandardScaler()
-        X_test_scaled_temp = scaler_temp.fit(X_train_temp).transform(X_test_temp) # Scale avec le scaler fit sur le train
+        # Assurez-vous que le scaler est fit sur les données d'entraînement si vous le recréez ici
+        X_test_scaled_temp = scaler_temp.fit(X_train_temp).transform(X_test_temp) 
         
         y_pred_cm = best_model.predict(X_test_scaled_temp)
         cm = confusion_matrix(y_test_temp, y_pred_cm, labels=[i for i in range(len(target_classes))])
